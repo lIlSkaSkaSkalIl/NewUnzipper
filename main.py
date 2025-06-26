@@ -4,6 +4,7 @@ import zipfile
 import threading
 import logging
 import queue
+import rarfile
 from urllib.parse import urlparse, parse_qs
 from config import BOT_TOKEN, CHAT_ID
 
@@ -18,7 +19,7 @@ logging.basicConfig(
 )
 
 # -------- Constants -------- #
-MAX_WORKERS = 3  # Jumlah thread untuk upload
+MAX_WORKERS = 3
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 
 # -------- Google Drive utilities -------- #
@@ -37,8 +38,7 @@ def download_gdrive_file(file_id, destination):
     response = session.get(URL, params={"id": file_id}, stream=True)
     token = get_confirm_token(response)
     if token:
-        params = {"id": file_id, "confirm": token}
-        response = session.get(URL, params=params, stream=True)
+        response = session.get(URL, params={"id": file_id, "confirm": token}, stream=True)
     save_response_content(response, destination)
     logging.info(f"✅ File berhasil diunduh ke {destination}")
 
@@ -54,12 +54,25 @@ def save_response_content(response, destination, chunk_size=32768):
             if chunk:
                 f.write(chunk)
 
-# -------- Unzip -------- #
-def unzip_file(zip_path, extract_to="unzipped"):
+# -------- Archive Extractor -------- #
+def extract_archive_file(file_path, extract_to="extracted"):
     os.makedirs(extract_to, exist_ok=True)
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_to)
-    logging.info(f"📂 File berhasil diekstrak ke {extract_to}")
+    file_ext = os.path.splitext(file_path)[1].lower()
+
+    try:
+        if file_ext == ".zip":
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_to)
+            logging.info(f"📂 ZIP diekstrak ke {extract_to}")
+        elif file_ext == ".rar":
+            with rarfile.RarFile(file_path) as rar_ref:
+                rar_ref.extractall(extract_to)
+            logging.info(f"📂 RAR diekstrak ke {extract_to}")
+        else:
+            raise ValueError("Format file tidak didukung: hanya .zip dan .rar")
+    except Exception as e:
+        raise RuntimeError(f"Gagal mengekstrak file: {e}")
+    
     return extract_to
 
 # -------- Upload to Telegram -------- #
@@ -85,35 +98,31 @@ def send_file_worker(q):
 
 def send_folder_to_telegram(folder_path):
     q = queue.Queue()
-
-    # Enqueue semua file hasil ekstrak
     for root, _, files in os.walk(folder_path):
-        for file in sorted(files):  # Urutkan agar lebih terkontrol
-            file_path = os.path.join(root, file)
-            q.put(file_path)
+        for file in sorted(files):
+            q.put(os.path.join(root, file))
 
-    # Mulai worker thread
     threads = []
     for _ in range(min(MAX_WORKERS, q.qsize())):
         t = threading.Thread(target=send_file_worker, args=(q,))
         t.start()
         threads.append(t)
 
-    q.join()  # Tunggu semua selesai
+    q.join()
     logging.info("✅ Semua file berhasil dikirim.")
 
 # -------- Main Program -------- #
 if __name__ == "__main__":
     try:
-        gdrive_url = input("🔗 Masukkan URL Google Drive file ZIP: ")
+        gdrive_url = input("🔗 Masukkan URL Google Drive file ZIP atau RAR: ")
         file_id = get_gdrive_file_id(gdrive_url)
 
         logging.info("📥 Mengunduh file dari Google Drive...")
-        zip_filename = "downloaded.zip"
-        download_gdrive_file(file_id, zip_filename)
+        archive_filename = "downloaded_archive"
+        download_gdrive_file(file_id, archive_filename)
 
-        logging.info("🗜️ Mengekstrak file ZIP...")
-        extracted_path = unzip_file(zip_filename)
+        logging.info("🗜️ Mengekstrak file arsip...")
+        extracted_path = extract_archive_file(archive_filename)
 
         logging.info("🚀 Mengirim file ke Telegram...")
         send_folder_to_telegram(extracted_path)
