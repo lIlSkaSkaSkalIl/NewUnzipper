@@ -4,6 +4,7 @@ import threading
 import logging
 import queue
 import rarfile
+import gdown
 import requests
 import time
 from urllib.parse import urlparse, parse_qs
@@ -43,53 +44,48 @@ def get_gdrive_file_id(url):
     else:
         raise ValueError("❌ Gagal mengurai URL Google Drive.")
 
-def download_file_with_gdown(file_id):
+def download_file_with_progress(file_id):
     url = f"https://drive.google.com/uc?id={file_id}"
-    response = requests.get(url, stream=True, allow_redirects=True)
-
-    disposition = response.headers.get("Content-Disposition", "")
     filename = "downloaded_archive"
-    if "filename=" in disposition:
-        filename = disposition.split("filename=")[1].strip('"')
 
-    # Kirim pesan progres awal ke Telegram
-    message = f"📥 Mengunduh: {filename}\nProgres: 0MB"
+    # Kirim pesan awal
     send_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    r = requests.post(send_url, data={'chat_id': CHAT_ID, 'text': message})
+    progress_msg = f"📥 Mengunduh file...\nProgres: 0MB"
+    r = requests.post(send_url, data={'chat_id': CHAT_ID, 'text': progress_msg})
     message_id = r.json().get("result", {}).get("message_id")
 
-    downloaded = 0
-    total = int(response.headers.get("Content-Length", 0))
-    chunk_size = 10 * 1024 * 1024
-    last_update_time = time.time()
+    # Mulai unduhan dengan gdown
+    start = time.time()
+    gdown.download(url, output=filename, fuzzy=True, quiet=True)
 
-    with open(filename, "wb") as f:
-        for chunk in response.iter_content(chunk_size):
-            if chunk:
-                f.write(chunk)
-                downloaded += len(chunk)
+    # Perkirakan progress tiap 10 detik (cek ukuran file di disk)
+    total_size = os.path.getsize(filename)
+    last_size = 0
 
-                current_time = time.time()
-                if current_time - last_update_time >= 10:
-                    percent = (downloaded / total) * 100 if total else 0
-                    current_mb = downloaded / (1024 * 1024)
-                    total_mb = total / (1024 * 1024)
-                    progress_msg = f"📥 Mengunduh: {filename}\nProgres: {current_mb:.1f}MB / {total_mb:.1f}MB ({percent:.1f}%)"
-                    edit_url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-                    requests.post(edit_url, data={
-                        'chat_id': CHAT_ID,
-                        'message_id': message_id,
-                        'text': progress_msg
-                    })
-                    last_update_time = current_time
+    for _ in range(6):  # Update selama 60 detik maksimal
+        time.sleep(10)
+        if not os.path.exists(filename):
+            break
+        current_size = os.path.getsize(filename)
+        if current_size == last_size:
+            break
+        last_size = current_size
 
-    # Final update
-    percent = (downloaded / total) * 100 if total else 0
-    current_mb = downloaded / (1024 * 1024)
-    total_mb = total / (1024 * 1024)
-    final_msg = f"✅ Selesai mengunduh: {filename}\nTotal: {current_mb:.1f}MB / {total_mb:.1f}MB ({percent:.1f}%)"
-    edit_url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
-    requests.post(edit_url, data={
+        percent = (current_size / total_size) * 100 if total_size else 0
+        current_mb = current_size / (1024 * 1024)
+        total_mb = total_size / (1024 * 1024)
+        progress_msg = f"📥 Mengunduh file...\nProgres: {current_mb:.1f}MB / {total_mb:.1f}MB ({percent:.1f}%)"
+        edit_url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+        requests.post(edit_url, data={
+            'chat_id': CHAT_ID,
+            'message_id': message_id,
+            'text': progress_msg
+        })
+
+    # Final pesan
+    final_mb = os.path.getsize(filename) / (1024 * 1024)
+    final_msg = f"✅ Selesai mengunduh file\nTotal: {final_mb:.1f}MB"
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText", data={
         'chat_id': CHAT_ID,
         'message_id': message_id,
         'text': final_msg
@@ -98,7 +94,7 @@ def download_file_with_gdown(file_id):
     logging.info(f"✅ File berhasil diunduh: {filename}")
     return filename
 
-# -------- Ekstraksi -------- #
+# -------- Ekstrak arsip -------- #
 def extract_archive_file(file_path, extract_to="extracted"):
     os.makedirs(extract_to, exist_ok=True)
     ext = os.path.splitext(file_path)[1].lower()
@@ -117,7 +113,7 @@ def extract_archive_file(file_path, extract_to="extracted"):
         raise RuntimeError(f"Gagal mengekstrak file: {e}")
     return extract_to
 
-# -------- Upload ke Telegram -------- #
+# -------- Kirim ke Telegram -------- #
 def send_file_worker(q):
     while not q.empty():
         file_path = q.get()
@@ -163,14 +159,14 @@ def send_folder_to_telegram(folder_path):
     q.join()
     logging.info("✅ Semua file berhasil dikirim.")
 
-# -------- Main -------- #
+# -------- Main Program -------- #
 if __name__ == "__main__":
     try:
         gdrive_url = input("🔗 Masukkan URL Google Drive file ZIP atau RAR: ")
         file_id = get_gdrive_file_id(gdrive_url)
 
         logging.info("📥 Mengunduh file dari Google Drive...")
-        archive_filename = download_file_with_gdown(file_id)
+        archive_filename = download_file_with_progress(file_id)
 
         logging.info("🗜️ Mengekstrak file arsip...")
         extracted_path = extract_archive_file(archive_filename)
