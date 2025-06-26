@@ -24,7 +24,7 @@ logging.basicConfig(
 MAX_WORKERS = 3
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 
-# -------- Util -------- #
+# -------- Util: Sanitize filename -------- #
 def sanitize_filename(path):
     filename = os.path.basename(path)
     safe = filename.replace(" ", "_").replace("[", "").replace("]", "").replace("(", "").replace(")", "")
@@ -34,6 +34,7 @@ def sanitize_filename(path):
         logging.info(f"✏️ Ubah nama file: {filename} → {safe}")
     return new_path
 
+# -------- Extract Google Drive ID -------- #
 def get_gdrive_file_id(url):
     parsed = urlparse(url)
     if "id" in parse_qs(parsed.query):
@@ -43,7 +44,7 @@ def get_gdrive_file_id(url):
     else:
         raise ValueError("❌ Gagal mengurai URL Google Drive.")
 
-# -------- Download with progress + original filename -------- #
+# -------- Download with progress -------- #
 def download_file_with_progress(file_id):
     session = requests.Session()
     base_url = "https://drive.google.com/uc?export=download"
@@ -60,9 +61,12 @@ def download_file_with_progress(file_id):
     # Ambil nama file dari header
     content_disp = response.headers.get("Content-Disposition", "")
     filename_match = re.findall('filename="(.+)"', content_disp)
-    filename = filename_match[0] if filename_match else "downloaded_file"
+    if filename_match:
+        filename = filename_match[0]
+    else:
+        filename = f"drivefile_{file_id}.bin"
 
-    # Kirim pesan awal
+    # Kirim pesan Telegram
     telegram_msg = f"📥 Mulai mengunduh: {filename}"
     send_resp = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -70,19 +74,19 @@ def download_file_with_progress(file_id):
     )
     message_id = send_resp.json().get("result", {}).get("message_id")
 
-    # Unduh dengan stream + progress
+    # Unduh file
     file_path = os.path.join(".", filename)
     total = int(response.headers.get("Content-Length", 0))
     downloaded = 0
     last_update = time.time()
 
     with open(file_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=10 * 1024 * 1024):  # 10MB
+        for chunk in response.iter_content(10 * 1024 * 1024):  # 10MB
             if chunk:
                 f.write(chunk)
                 downloaded += len(chunk)
-
-                if time.time() - last_update > 10:
+                now = time.time()
+                if now - last_update > 10:
                     percent = (downloaded / total) * 100 if total else 0
                     current_mb = downloaded / (1024 * 1024)
                     total_mb = total / (1024 * 1024)
@@ -95,8 +99,9 @@ def download_file_with_progress(file_id):
                             "text": progress_msg
                         }
                     )
-                    last_update = time.time()
+                    last_update = now
 
+    # Final pesan
     final_msg = f"✅ Unduhan selesai: {filename}"
     requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
@@ -106,7 +111,7 @@ def download_file_with_progress(file_id):
     logging.info(f"✅ File berhasil diunduh: {file_path}")
     return file_path
 
-# -------- Ekstrak arsip -------- #
+# -------- Extract Archive -------- #
 def extract_archive_file(file_path, extract_to="extracted"):
     os.makedirs(extract_to, exist_ok=True)
     ext = os.path.splitext(file_path)[1].lower()
@@ -171,7 +176,7 @@ def send_folder_to_telegram(folder_path):
     q.join()
     logging.info("✅ Semua file berhasil dikirim.")
 
-# -------- Main Program -------- #
+# -------- Main -------- #
 if __name__ == "__main__":
     try:
         gdrive_url = input("🔗 Masukkan URL Google Drive file ZIP atau RAR: ")
