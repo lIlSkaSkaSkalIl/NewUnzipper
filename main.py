@@ -1,4 +1,5 @@
 import os
+import re
 import zipfile
 import threading
 import logging
@@ -24,6 +25,16 @@ logging.basicConfig(
 MAX_WORKERS = 3
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 
+# -------- Utility: Sanitize filename -------- #
+def sanitize_filename(name, max_length=100):
+    name = re.sub(r'[\\/*?:"<>|]', "", name)
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    if len(name) > max_length:
+        base, ext = os.path.splitext(name)
+        name = base[:max_length - len(ext)] + ext
+    return name
+
 # -------- Utility: Send Telegram Message -------- #
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -43,7 +54,7 @@ def get_gdrive_file_id(url):
         raise ValueError("❌ Gagal mengurai URL Google Drive.")
 
 # -------- Download File with Progress & Telegram Updates -------- #
-def download_file_with_progress(gdrive_url, output="downloaded_file"):
+def download_file_with_progress(gdrive_url):
     file_id = get_gdrive_file_id(gdrive_url)
     download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
 
@@ -59,7 +70,13 @@ def download_file_with_progress(gdrive_url, output="downloaded_file"):
 
     total_size = int(response.headers.get('Content-Length', 0))
     block_size = 1024 * 1024  # 1 MB
-    filename = output
+
+    # Ambil dan sanitasi nama file dari header
+    content_disp = response.headers.get('Content-Disposition', '')
+    filename = "downloaded_file"
+    if 'filename=' in content_disp:
+        raw_name = content_disp.split('filename=')[1].strip('"\' ')
+        filename = sanitize_filename(raw_name)
 
     progress_bar = tqdm(total=total_size, unit='iB', unit_scale=True)
     last_telegram_update = time.time()
@@ -147,7 +164,7 @@ if __name__ == "__main__":
     try:
         gdrive_url = input("🔗 Masukkan URL Google Drive file ZIP atau RAR: ")
         logging.info("📥 Mengunduh file dari Google Drive...")
-        archive_filename = download_file_with_progress(gdrive_url, output="archive_downloaded")
+        archive_filename = download_file_with_progress(gdrive_url)
 
         logging.info("🗜️ Mengekstrak file arsip...")
         extracted_path = extract_archive_file(archive_filename)
