@@ -6,6 +6,7 @@ import queue
 import rarfile
 import gdown
 import requests
+import time
 from urllib.parse import urlparse, parse_qs
 from config import BOT_TOKEN, CHAT_ID
 
@@ -23,7 +24,7 @@ logging.basicConfig(
 MAX_WORKERS = 3
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 
-# -------- Google Drive download using gdown -------- #
+# -------- Google Drive ID Parser -------- #
 def get_gdrive_file_id(url):
     parsed = urlparse(url)
     if "id" in parse_qs(parsed.query):
@@ -33,15 +34,61 @@ def get_gdrive_file_id(url):
     else:
         raise ValueError("❌ Gagal mengurai URL Google Drive.")
 
-def download_file_with_gdown(file_id):
+# -------- Download with gdown and Telegram progress -------- #
+def download_file_with_progress_and_name(file_id):
     url = f"https://drive.google.com/uc?id={file_id}"
-    file_path = gdown.download(url=url, fuzzy=True, quiet=False)
-    if not file_path or not os.path.exists(file_path):
-        raise RuntimeError("❌ Gagal mengunduh file dari Google Drive.")
-    logging.info(f"✅ File berhasil diunduh: {file_path}")
-    return file_path
+    filename = None
+    download_done = threading.Event()
 
-# -------- Archive extractor (.zip & .rar) -------- #
+    # Mulai unduhan di thread terpisah
+    def _download():
+        nonlocal filename
+        filename = gdown.download(url=url, fuzzy=True, quiet=True)
+        download_done.set()
+
+    thread = threading.Thread(target=_download)
+    thread.start()
+
+    # Kirim pesan awal
+    progress_msg = "📥 Mengunduh file..."
+    msg = requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": progress_msg}
+    )
+    message_id = msg.json().get("result", {}).get("message_id")
+
+    last_size = 0
+    while not download_done.is_set():
+        if filename and os.path.exists(filename):
+            size = os.path.getsize(filename)
+            if size > last_size:
+                mb = size / (1024 * 1024)
+                progress = f"📥 Mengunduh: {os.path.basename(filename)}\nProgres: {mb:.1f}MB"
+                requests.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
+                    data={
+                        "chat_id": CHAT_ID,
+                        "message_id": message_id,
+                        "text": progress
+                    }
+                )
+                last_size = size
+        time.sleep(10)
+
+    final_msg = f"✅ Unduhan selesai: {os.path.basename(filename)}"
+    requests.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
+        data={
+            "chat_id": CHAT_ID,
+            "message_id": message_id,
+            "text": final_msg
+        }
+    )
+
+    logging.info(f"✅ File berhasil diunduh: {filename}")
+    return filename
+
+# -------- Ekstrak arsip -------- #
 def extract_archive_file(file_path, extract_to="extracted"):
     os.makedirs(extract_to, exist_ok=True)
     ext = os.path.splitext(file_path)[1].lower()
@@ -60,7 +107,7 @@ def extract_archive_file(file_path, extract_to="extracted"):
         raise RuntimeError(f"Gagal mengekstrak file: {e}")
     return extract_to
 
-# -------- Upload to Telegram -------- #
+# -------- Kirim file ke Telegram -------- #
 def send_file_worker(q):
     while not q.empty():
         file_path = q.get()
@@ -103,7 +150,7 @@ if __name__ == "__main__":
         file_id = get_gdrive_file_id(gdrive_url)
 
         logging.info("📥 Mengunduh file dari Google Drive...")
-        archive_filename = download_file_with_gdown(file_id)
+        archive_filename = download_file_with_progress_and_name(file_id)
 
         logging.info("🗜️ Mengekstrak file arsip...")
         extracted_path = extract_archive_file(archive_filename)
