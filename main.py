@@ -4,8 +4,9 @@ import threading
 import logging
 import queue
 import rarfile
-import gdown
 import requests
+import time
+from tqdm import tqdm
 from urllib.parse import urlparse, parse_qs
 from config import BOT_TOKEN, CHAT_ID
 
@@ -23,7 +24,15 @@ logging.basicConfig(
 MAX_WORKERS = 3
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 
-# -------- Google Drive download using gdown -------- #
+# -------- Utility: Send Telegram Message -------- #
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    try:
+        requests.post(url, data={'chat_id': CHAT_ID, 'text': text})
+    except Exception as e:
+        logging.error(f"❌ Gagal kirim pesan ke Telegram: {e}")
+
+# -------- Google Drive File ID Extraction -------- #
 def get_gdrive_file_id(url):
     parsed = urlparse(url)
     if "id" in parse_qs(parsed.query):
@@ -33,15 +42,52 @@ def get_gdrive_file_id(url):
     else:
         raise ValueError("❌ Gagal mengurai URL Google Drive.")
 
-def download_file_with_gdown(file_id):
-    url = f"https://drive.google.com/uc?id={file_id}"
-    file_path = gdown.download(url=url, fuzzy=True, quiet=False)
-    if not file_path or not os.path.exists(file_path):
-        raise RuntimeError("❌ Gagal mengunduh file dari Google Drive.")
-    logging.info(f"✅ File berhasil diunduh: {file_path}")
-    return file_path
+# -------- Download File with Progress & Telegram Updates -------- #
+def download_file_with_progress(gdrive_url, output="downloaded_file"):
+    file_id = get_gdrive_file_id(gdrive_url)
+    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
 
-# -------- Archive extractor (.zip & .rar) -------- #
+    session = requests.Session()
+    response = session.get(download_url, stream=True)
+
+    # Tangani konfirmasi Google Drive jika file besar
+    for key, value in response.cookies.items():
+        if key.startswith("download_warning"):
+            download_url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm={value}"
+            response = session.get(download_url, stream=True)
+            break
+
+    total_size = int(response.headers.get('Content-Length', 0))
+    block_size = 1024 * 1024  # 1 MB
+    filename = output
+
+    progress_bar = tqdm(total=total_size, unit='iB', unit_scale=True)
+    last_telegram_update = time.time()
+    telegram_message_interval = 10  # detik
+
+    with open(filename, 'wb') as f:
+        downloaded = 0
+        for data in response.iter_content(block_size):
+            f.write(data)
+            downloaded += len(data)
+            progress_bar.update(len(data))
+
+            current_time = time.time()
+            if current_time - last_telegram_update >= telegram_message_interval:
+                percent = int(downloaded * 100 / total_size)
+                send_telegram_message(f"⬇️ Unduhan berjalan... ({percent}%)")
+                last_telegram_update = current_time
+
+    progress_bar.close()
+
+    if total_size != 0 and downloaded != total_size:
+        raise RuntimeError("❌ Unduhan gagal atau tidak lengkap.")
+
+    logging.info(f"✅ File berhasil diunduh: {filename}")
+    send_telegram_message("✅ Unduhan selesai 100%!")
+    return filename
+
+# -------- Archive Extractor (.zip & .rar) -------- #
 def extract_archive_file(file_path, extract_to="extracted"):
     os.makedirs(extract_to, exist_ok=True)
     ext = os.path.splitext(file_path)[1].lower()
@@ -100,10 +146,8 @@ def send_folder_to_telegram(folder_path):
 if __name__ == "__main__":
     try:
         gdrive_url = input("🔗 Masukkan URL Google Drive file ZIP atau RAR: ")
-        file_id = get_gdrive_file_id(gdrive_url)
-
         logging.info("📥 Mengunduh file dari Google Drive...")
-        archive_filename = download_file_with_gdown(file_id)
+        archive_filename = download_file_with_progress(gdrive_url, output="archive_downloaded")
 
         logging.info("🗜️ Mengekstrak file arsip...")
         extracted_path = extract_archive_file(archive_filename)
@@ -114,3 +158,4 @@ if __name__ == "__main__":
         logging.info("🎉 Proses selesai tanpa error.")
     except Exception as e:
         logging.error(f"❌ Terjadi kesalahan fatal: {str(e)}")
+        send_telegram_message(f"❌ Error: {e}")
