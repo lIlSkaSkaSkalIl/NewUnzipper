@@ -34,13 +34,12 @@ def get_gdrive_file_id(url):
     else:
         raise ValueError("❌ Gagal mengurai URL Google Drive.")
 
-# -------- Download with gdown and Telegram progress -------- #
+# -------- Download with progress & logging -------- #
 def download_file_with_progress_and_name(file_id):
     url = f"https://drive.google.com/uc?id={file_id}"
     filename = None
     download_done = threading.Event()
 
-    # Mulai unduhan di thread terpisah
     def _download():
         nonlocal filename
         filename = gdown.download(url=url, fuzzy=True, quiet=True)
@@ -49,11 +48,10 @@ def download_file_with_progress_and_name(file_id):
     thread = threading.Thread(target=_download)
     thread.start()
 
-    # Kirim pesan awal
-    progress_msg = "📥 Mengunduh file..."
+    # Kirim pesan awal ke Telegram
     msg = requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": progress_msg}
+        data={"chat_id": CHAT_ID, "text": "📥 Mengunduh file..."}
     )
     message_id = msg.json().get("result", {}).get("message_id")
 
@@ -64,6 +62,7 @@ def download_file_with_progress_and_name(file_id):
             if size > last_size:
                 mb = size / (1024 * 1024)
                 progress = f"📥 Mengunduh: {os.path.basename(filename)}\nProgres: {mb:.1f}MB"
+                logging.info(f"📊 Progres: {mb:.1f} MB")  # Logging ke Colab
                 requests.post(
                     f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
                     data={
