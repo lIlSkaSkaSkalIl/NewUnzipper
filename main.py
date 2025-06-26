@@ -1,10 +1,11 @@
 import os
-import requests
 import zipfile
 import threading
 import logging
 import queue
 import rarfile
+import gdown
+import requests
 from urllib.parse import urlparse, parse_qs
 from config import BOT_TOKEN, CHAT_ID
 
@@ -22,7 +23,7 @@ logging.basicConfig(
 MAX_WORKERS = 3
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 
-# -------- Google Drive utilities -------- #
+# -------- Google Drive download using gdown -------- #
 def get_gdrive_file_id(url):
     parsed = urlparse(url)
     if "id" in parse_qs(parsed.query):
@@ -32,39 +33,24 @@ def get_gdrive_file_id(url):
     else:
         raise ValueError("❌ Gagal mengurai URL Google Drive.")
 
-def download_gdrive_file(file_id, destination):
-    session = requests.Session()
-    URL = "https://docs.google.com/uc?export=download"
-    response = session.get(URL, params={"id": file_id}, stream=True)
-    token = get_confirm_token(response)
-    if token:
-        response = session.get(URL, params={"id": file_id, "confirm": token}, stream=True)
-    save_response_content(response, destination)
-    logging.info(f"✅ File berhasil diunduh ke {destination}")
+def download_file_with_gdown(file_id):
+    url = f"https://drive.google.com/uc?id={file_id}"
+    file_path = gdown.download(url=url, fuzzy=True, quiet=False)
+    if not file_path or not os.path.exists(file_path):
+        raise RuntimeError("❌ Gagal mengunduh file dari Google Drive.")
+    logging.info(f"✅ File berhasil diunduh: {file_path}")
+    return file_path
 
-def get_confirm_token(response):
-    for k, v in response.cookies.items():
-        if k.startswith("download_warning"):
-            return v
-    return None
-
-def save_response_content(response, destination, chunk_size=32768):
-    with open(destination, "wb") as f:
-        for chunk in response.iter_content(chunk_size):
-            if chunk:
-                f.write(chunk)
-
-# -------- Archive Extractor -------- #
+# -------- Archive extractor (.zip & .rar) -------- #
 def extract_archive_file(file_path, extract_to="extracted"):
     os.makedirs(extract_to, exist_ok=True)
-    file_ext = os.path.splitext(file_path)[1].lower()
-
+    ext = os.path.splitext(file_path)[1].lower()
     try:
-        if file_ext == ".zip":
+        if ext == ".zip":
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_to)
             logging.info(f"📂 ZIP diekstrak ke {extract_to}")
-        elif file_ext == ".rar":
+        elif ext == ".rar":
             with rarfile.RarFile(file_path) as rar_ref:
                 rar_ref.extractall(extract_to)
             logging.info(f"📂 RAR diekstrak ke {extract_to}")
@@ -72,7 +58,6 @@ def extract_archive_file(file_path, extract_to="extracted"):
             raise ValueError("Format file tidak didukung: hanya .zip dan .rar")
     except Exception as e:
         raise RuntimeError(f"Gagal mengekstrak file: {e}")
-    
     return extract_to
 
 # -------- Upload to Telegram -------- #
@@ -118,8 +103,7 @@ if __name__ == "__main__":
         file_id = get_gdrive_file_id(gdrive_url)
 
         logging.info("📥 Mengunduh file dari Google Drive...")
-        archive_filename = "downloaded_archive"
-        download_gdrive_file(file_id, archive_filename)
+        archive_filename = download_file_with_gdown(file_id)
 
         logging.info("🗜️ Mengekstrak file arsip...")
         extracted_path = extract_archive_file(archive_filename)
